@@ -31,10 +31,17 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+#
+# EKS runs on 2 different AZ's 
+# AND node groups require subnets with an Internet Gateway route to have auto-assign public IP enabled (map_public_ip_on_launch = true)
+#
+
+
 resource "aws_subnet" "public_subnet" {
   vpc_id     = aws_vpc.main.id
   cidr_block = "10.0.1.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
 
   tags = {
     Name = "Public"
@@ -45,7 +52,8 @@ resource "aws_subnet" "public_subnet2" {
   vpc_id     = aws_vpc.main.id
   cidr_block = "10.0.2.0/24"
   availability_zone = data.aws_availability_zones.available.names[1]
-
+  map_public_ip_on_launch = true
+  
   tags = {
     Name = "Public2"
   }
@@ -64,14 +72,56 @@ resource "aws_route_table" "public_route_table" {
   }
 }
 
+#
+# Must create association between route table and subnet (every time route table is used)
+#
+
+resource "aws_route_table_association" "association_subnet1" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+resource "aws_route_table_association" "association_subnet2" {
+  subnet_id      = aws_subnet.public_subnet2.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+#
+# EKS cluster must be before node group
+#
+
+resource "aws_eks_cluster" "kube-ec2" {
+  name = "my-eks-cluster"
+
+  access_config {
+    authentication_mode = "API"
+  }
+
+  role_arn = aws_iam_role.cluster-role.arn
+  version  = "1.35"
+  
+
+  vpc_config {
+    subnet_ids = [
+      aws_subnet.public_subnet2.id,
+      aws_subnet.public_subnet.id
+    ]
+  }
+  
+  depends_on = [
+    aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
+  ]
+}
+
 resource "aws_eks_node_group" "worker-nodes" {
-  cluster_name    = "my-eks-cluster"
+  cluster_name    = aws_eks_cluster.kube-ec2.name
   node_group_name = "worker-nodes"
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = [
       aws_subnet.public_subnet2.id,
       aws_subnet.public_subnet.id
     ]
+  instance_types = ["t3.micro"]
 
   scaling_config {
     desired_size = 2
@@ -87,27 +137,6 @@ resource "aws_eks_node_group" "worker-nodes" {
   ]
 }
 
-resource "aws_eks_cluster" "kube-ec2" {
-  name = "my-eks-cluster"
-
-  access_config {
-    authentication_mode = "API"
-  }
-
-  role_arn = aws_iam_role.cluster-role.arn
-  version  = "1.35"
-
-  vpc_config {
-    subnet_ids = [
-      aws_subnet.public_subnet2.id,
-      aws_subnet.public_subnet.id
-    ]
-  }
-
-  depends_on = [
-    aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
-  ]
-}
 
 #
 # NOW CREATE IAM ROLES FOR EKS CLUSTER AND FOR NODES (BUCKET WHERE POLICIES ARE STORED)
